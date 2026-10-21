@@ -1,0 +1,88 @@
+# Configuración de métricas del kit .flow
+#
+# Quién la usa:
+#   - El planificador, como referencia al fijar objetivos de calidad por fase.
+#   - El ejecutor, para el gate estático al cerrar cada fase (.flow/metrics/).
+#   - El analizador, como guion completo de la fase de análisis.
+# Ajustar herramientas, umbrales y escenarios al lenguaje y naturaleza del proyecto.
+
+static_analysis:
+  # Herramientas por ecosistema (usar las que apliquen al stack):
+  #   Python:  radon (complejidad, mantenibilidad), pydeps (dependencias)
+  #   JS/TS:   dependency-cruiser (dependencias), eslint (complejidad)
+  #   Java:    jQAssistant, jdepend
+  tools:
+    - radon
+    - dependency-cruiser
+  thresholds:
+    inestabilidad_max: 0.5            # I = Ce / (Ca + Ce), en módulos del núcleo
+    abstraccion_min: 0.5              # A = Na / Nc, en módulos estables
+    distancia_max: 0.3                # D = |A + I - 1|, en todos los módulos
+    complejidad_ciclomatica_max: 10   # por función
+    lineas_por_metodo_max: 20
+    cobertura_min: 0.8                # cobertura de tests en lógica de negocio
+
+dynamic_analysis:
+  tools:
+    - pytest-benchmark
+    - locust
+  # Escenarios de carga: el analizador los ejecuta tal cual; añadir tantos
+  # como flujos críticos tenga el sistema.
+  scenarios:
+    - nombre: "carga_normal"
+      usuarios: 10
+      tiempo: "60s"
+      endpoint: "/api/ejemplo"
+    - nombre: "carga_pico"
+      usuarios: 50
+      tiempo: "120s"
+      endpoint: "/api/ejemplo"
+  metrics:
+    - latencia_p95
+    - latencia_p99
+    - throughput
+    - uso_memoria
+    - tiempo_respuesta_promedio
+  runs:
+    repeticiones: 5      # repeticiones por escenario para obtener dispersión
+    calentamiento: 1     # ejecuciones previas descartadas (warm-up)
+
+entropy:
+  tool: "code-maat"      # alternativa degradada: git log --numstat (ver run_analysis.sh)
+  formula: "H = -sum(p_i * log2(p_i))"
+  description: "Entropía de cambios basada en la frecuencia relativa de modificaciones por archivo. Baja entropía con alta actividad = cambio concentrado: candidatos a hotspot."
+
+hotspots:
+  # Análisis forense (Adam Tornhill): priorizar refactorización donde
+  # coinciden churn alto y complejidad alta.
+  formula: "prioridad = churn(archivo) * complejidad(archivo)"
+  fuente_churn: "historial Git (code-maat o git log --numstat)"
+  fuente_complejidad: "radon cc u otra herramienta del stack"
+
+amdahl:
+  formula: "Speedup = 1 / ((1-P) + P/N)"
+  parametros:
+    P: "fracción paralelizable (determinar experimentalmente con profiling)"
+    N: "número de núcleos o workers disponibles"
+
+dora_metrics:
+  # Adaptadas al flujo .flow; se calculan parseando .flow/state/handoff_log.md.
+  lead_time_definition: "Tiempo desde inicio de fase (prompt emitido) hasta DoD cumplido (aprobación del planificador)"
+  frecuencia_entrega: "Fases aprobadas por unidad de tiempo"
+  tasa_retrabajo: "Proporción de fases que necesitaron al menos un prompt corregido"
+  tiempo_recuperacion: "Tiempo medio desde un retorno con bloqueo o rechazo hasta la aprobación de esa fase"
+
+output_formats: ["csv", "json", "png", "md"]
+
+output_paths:
+  metricas_por_fase: ".flow/metrics"          # las escribe el ejecutor
+  datos: ".flow/analisis/datos"               # datos crudos del analizador
+  informe: ".flow/analisis/informe_analisis.md"
+
+gate:
+  script: ".flow/tools/verificar_fase.py"
+  uso: "python .flow/tools/verificar_fase.py FASE-NN"
+  # Compara .flow/metrics/FASE-NN.json con static_analysis.thresholds y emite
+  # APTO / NO APTO (salida 0 / 1). El esquema del JSON de entrada está
+  # documentado en la cabecera del script. Lo ejecuta el ejecutor al cerrar
+  # cada fase; el desarrollador y el planificador pueden re-ejecutarlo.
